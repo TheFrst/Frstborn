@@ -153,9 +153,13 @@ function newLife() {
     yr: null, totals: { quests: 0, triumphs: 0, fails: 0, gold: 0, legends: [] }, heroes: [], best: { rating: 0 } };
   resetYear();
   for (const k in ORDERS) C.orderPts[k] = 0;
+  C.omen = rollOmen();
+  logIt(`🌌 Born under ${C.omen.n}. ${C.omen.p}`, true);
   logIt(`✉️ A letter sealed with dragon wax: ${C.name} is accepted to Aldermoor Academy, Order of ${ORDERS[C.order].name}.`);
   persist();
+  queue.push({ origin: true });
   queue.push({ intro: true });
+  const anc = ancestorCard(); if (anc) queue.push({ result: anc });
   openCareer();
 }
 function resetYear() { C.yr = { quests: 0, ratings: [], fame0: C.fame, gold0: C.gold, triumphs: 0, studied: 0, skyW: 0, skyL: 0, promo: null }; }
@@ -342,7 +346,7 @@ function advance() {
   if (C.phase === "academy") for (const k in ORDERS) if (k !== C.order) C.orderPts[k] += ri(10, 32);
   if (C.phase === "academy") { const w = CALLINGS[C.calling].w; gainStat(Math.random() < 0.6 ? pick(Object.keys(w)) : pick(STAT_KEYS), 2); }
   C.season++;
-  if (C.season > 3) { C.season = 0; yearEnd(); }
+  if (C.season > 3) { C.season = 0; yearEnd(); if (C.phase !== "over") yearlyExtras(); }
   if (ovr(C) >= C.perkAt && C.phase !== "over" && Object.keys(PERKS).some(k => !has(k))) { C.perkAt += 10; queue.push({ perk: true }); }
   persist();
 }
@@ -423,6 +427,7 @@ function fightMove(me) {
   const o = won ? F.win : F.lose;
   C.duels = C.duels || { w: 0, l: 0 }; C.duels[won ? "w" : "l"]++;
   const chips = apply(o.fx);
+  if (won && o.flag) { C.flags[o.flag] = true; if (o.trophy) trophy(o.trophy[0], o.trophy[1]); }
   logIt(`⚔️ Duel vs ${F.opp.name}: ${won ? "WON" : "lost"}`);
   queue.unshift({ result: { title: won ? `🏆 You beat ${F.opp.name}!` : `💥 ${F.opp.name} wins`, text: line + "\n\n" + fill(o.t), chips } });
   if (won && o.next) queue.splice(1, 0, { fight: o.next() });
@@ -602,6 +607,7 @@ function legendTitle() {
 function endLife(how) {
   C.phase = "over";
   const L = { name: C.name, look: lookOf(C), title: legendTitle(), legacy: legacy(), age: C.age, trophies: C.trophies.length, line: `${RACES[C.race].name} ${CALLINGS[C.calling].name}`, how };
+  const graves = load("frstGraves", []); graves.unshift({ name: C.name, title: L.title, legacy: L.legacy, age: C.age, race: C.race, heirloom: C.heirloom, look: L.look, nem: C.flags.nemDown ? C.rival.name : "" }); save("frstGraves", graves.slice(0, 12));
   const hall = load("frstLegends", []); hall.push(L); hall.sort((a, b) => b.legacy - a.legacy); save("frstLegends", hall.slice(0, 20));
   logIt(how === "died" ? `🕯️ ${C.name} passed away at ${C.age}.` : `🌅 ${C.name} retired at ${C.age}.`, true);
   persist();
@@ -616,6 +622,7 @@ function openCareer() { showPage("career"); renderCareer(); if (queue.length) sh
 function bar(v, max, cls) { const b = el("div", null, "mbar " + (cls || "")); const i = el("div"); i.style.width = clamp(v / max * 100, 0, 100) + "%"; b.append(i); return b; }
 function renderCareer() {
   if (!C) return renderHome();
+  try { checkFeats(); } catch (e) { console.error(e); }
   document.body.dataset.season = C.season;
   const head = $("#chead");
   head.style.setProperty("--house", ORDERS[C.order].color);
@@ -693,6 +700,12 @@ function trophyView() {
   if (!C.trophies.length) cab.append(el("p", "Your trophy cabinet is empty… for now.", "muted"));
   for (const t of [...C.trophies].reverse()) { const d = el("div", null, "tro"); d.append(el("span", t.icon, "ti"), el("b", t.name), el("small", `age ${t.age} · ${t.y}`)); cab.append(d); }
   out.push(cab);
+  checkFeats(true);
+  const fw = el("div", null, "card"); fw.append(el("h3", `🏅 Feats · ${(C.feats || []).length}/${FEATS.length}`));
+  const fg = el("div", null, "featgrid"); for (const [id, n, d] of FEATS) { const on = (C.feats || []).includes(id); const x = el("div", null, "feat" + (on ? " on" : "")); x.append(el("b", (on ? "🏅 " : "🔒 ") + n), el("small", d)); fg.append(x); }
+  fw.append(fg); out.push(fw);
+  if (C.omen) { const om = el("div", null, "card small"); om.append(el("b", `🌌 Born under ${C.omen.n}`), el("div", `“${C.omen.p}”${C.flags.prophecy ? " · FULFILLED ✨" : ""}`, "muted")); out.push(om); }
+  if (C.bond) { const pb = el("div", null, "card small"); pb.append(el("b", `${PETS[C.pet].icon} ${C.petName || PETS[C.pet].name} · bond level ${Math.min(5, Math.floor(C.bond / 2))}`), el("div", `${C.bond} years together`, "muted")); out.push(pb); }
   return out;
 }
 function storyView() { return [el("div", null, "card")].map(c => { c.append(...C.log.map(l => { const d = el("div", null, "logline" + (l.big ? " big" : "")); d.append(el("small", `Age ${l.a} · ${SEASONS[l.s]}  `), l.t); return d; })); return c; }); }
@@ -715,6 +728,11 @@ function showNext() {
   renderCareer();
   if (!queue.length) { closeModal(); return; }
   const cd = queue.shift();
+  if (cd.origin) {
+    const o = C.omen, sky = el("div", null, "omen-sky " + o.k); for (let i = 0; i < 40; i++) { const st = el("i"); st.style.left = Math.random() * 100 + "%"; st.style.top = Math.random() * 100 + "%"; st.style.animationDelay = Math.random() * 3 + "s"; sky.append(st); }
+    const f = el("div", null, "center omen-fig"); f.append(figureEl(lookOf(C), 70));
+    return modal([sky, el("div", "THE NIGHT YOU WERE BORN", "omen-eye"), el("h2", `${o.ic} ${o.n}`), f, el("p", o.t.replace("{race}", RACES[C.race].name.toLowerCase()), "story"), el("p", `🔮 The prophecy: “${o.p}”`, "omen-p"), chipsEl(o.chips || []), cont("✨ Begin")]);
+  }
   if (cd.intro) {
     const f = el("div", null, "center"); f.append(figureEl(lookOf(C), 90));
     return modal([el("h2", "✉️ A Letter Arrives"), f, el("p", `Dear ${C.name},\n\nWe are pleased to inform you that you have been accepted to ALDERMOOR ACADEMY of the First Realm. The Oath has placed you in the Order of ${ORDERS[C.order].icon} ${ORDERS[C.order].name}.\n\nYour first year begins this autumn. Bring your ${PETS[C.pet].name.toLowerCase()}. Do not bring dragons.\n\n${C.teacher}, Deputy Head`, "story letter"),
@@ -905,7 +923,94 @@ window.__frst = { get C() { return C; }, ovr: () => ovr(C), queue: () => queue }
   const lu = $("#lineup");
   const picks = [["elf", "lifebinder"], ["orc", "warden"], [profile.race, profile.calling], ["vampire", "necromancer"], ["celestial", "ranger"]];
   picks.forEach(([race, calling], i) => { const p = i === 2 && saved ? profile : { ...randomProfile(), race, calling }; if (!(i === 2 && saved)) p.skin = RACES[race].skins[i % 3]; lu.append(figureEl(p, i === 2 ? 70 : 54)); });
-  const go = () => { $("#splash").classList.add("gone"); setTimeout(() => $("#splash").remove(), 700); };
+  const go = () => { $("#splash").classList.add("gone"); setTimeout(() => $("#splash")?.remove(), 700); };
   $("#splash").addEventListener("click", go);
   addEventListener("keydown", function k(e) { if ($("#splash")) { go(); removeEventListener("keydown", k); } });
+}
+
+// =====================================================================
+// UPGRADE: omens, ancestors, companion bond, nemesis saga, prophecy, feats
+// =====================================================================
+const OMENS = [
+  { k: "comet", ic: "☄️", n: "the Red Comet", t: "A red comet tore across the sky the night you were born. The {race} midwife dropped her lamp and whispered that magic would follow you all your life.", p: "When the comet returns, the child of fire will bend the sky.", fx: "arcana+3" },
+  { k: "storm", ic: "⛈️", n: "the Thousand-Year Storm", t: "Lightning struck the village well three times as you took your first breath. The old folk say storm-children never sit still.", p: "The storm-born will outrun every arrow.", fx: "agility+3" },
+  { k: "moon", ic: "🌕", n: "a Blood Moon", t: "The moon rose red as wine. Your mother held you tight, because the elders had told her what blood-moon children become: unbreakable, or lost.", p: "Blood calls to blood. Your strength will be tested by an old enemy.", fx: "might+3" },
+  { k: "twin", ic: "✨", n: "the Twin Stars", t: "Two stars that never meet stood side by side above your cradle. Everyone who visited you that night left smiling, and could not say why.", p: "Kings and dragons alike will listen when the star-child speaks.", fx: "charm+3" },
+  { k: "eclipse", ic: "🌑", n: "a Total Eclipse", t: "The sun went black at noon. Birds fell silent. In the dark, you did not cry. You only watched, as if you were already thinking.", p: "The eclipse-born will see the answer when all others see darkness.", fx: "wits+3" },
+  { k: "aurora", ic: "🌌", n: "the Singing Aurora", t: "Green fire danced across the northern sky and hummed a low song. The temple bells rang by themselves.", p: "The gods have marked you. Your spirit will not be broken.", fx: "spirit+3" },
+  { k: "dragon", ic: "🐉", n: "a Dragon's Shadow", t: "Something huge passed over the house that night, blotting out the stars. In the morning, there was a single black scale on your cradle.", p: "A dragon remembers your name. One day, it will come to collect.", fx: "might+2 arcana+2" },
+  { k: "quiet", ic: "🕯️", n: "a Silent Night", t: "No omen, no comet, no storm. Just a quiet night and a single candle. The seers were disappointed. Your mother was not.", p: "The one without a prophecy writes their own.", fx: "main+2 fame+10" },
+];
+function rollOmen() { const o = { ...OMENS[ri(0, OMENS.length - 1)] }; o.chips = apply(o.fx); return o; }
+function ancestorCard() {
+  const g = load("frstGraves", []); if (!g.length) return null;
+  const a = g[0]; C.ancestor = a.name; const bonus = a.legacy >= 3000 ? "main+3 fame+40" : a.legacy >= 1000 ? "main+2 fame+20" : "main+1 fame+5";
+  const H = HEIRLOOMS[a.heirloom];
+  return { title: "📜 The Academy Remembers", text: `On your first night, you wander into the old library and find a dusty book about ${a.name}, ${a.title}, who lived to ${a.age}. ${a.nem ? `It says they finally defeated their nemesis, ${a.nem}. ` : ""}In the great hall hangs their ${H ? H.icon + " " + H.name : "old heirloom"}. When you touch it, it is warm.\n\n"Their story is over," says the librarian. "Yours is just beginning."`, chips: apply(bonus) };
+}
+const PET_NAMES = ["Ash", "Mira", "Pip", "Nox", "Ember", "Biscuit", "Shadow", "Luma", "Grit", "Puddle", "Fang", "Willow"];
+function yearlyExtras() {
+  // companion bond: grows every year
+  C.bond = (C.bond || 0) + 1; if (!C.petName) C.petName = pick(PET_NAMES);
+  const P = PETS[C.pet];
+  if ([2, 4, 6, 8, 10].includes(C.bond)) {
+    const lvl = C.bond / 2, fx = ["spirit+2", "wits+2 agility+1", "main+2", "might+2 spirit+2", "main+3 fame+30"][lvl - 1];
+    const lines = ["now follows you everywhere, even into exams.", "saved you from a trap in the forest, all on its own.", "can sense danger before you can. You trust it with your life.", "fought beside you in a real battle and did not run.", "is a legend now. Bards sing about the two of you."];
+    queue.push({ result: { title: `${P.icon} Bond level ${lvl}: ${C.petName}`, text: `Your ${P.name.toLowerCase()} ${C.petName} ${lines[lvl - 1]}`, chips: apply(fx) } });
+  }
+  // the prophecy comes true at 30
+  if (C.age === 30 && C.omen && !C.flags.prophecy) {
+    C.flags.prophecy = true; const big = ovr(C) >= 60;
+    queue.push({ result: { title: `🔮 The Prophecy of ${C.omen.n}`, text: big ? `The words spoken at your birth come true: “${C.omen.p}” Today, the whole realm sees it.` : `The words spoken at your birth echo in your head: “${C.omen.p}” Maybe it is not too late.`, chips: apply(big ? "fame+150 main+2" : "main+3") } });
+  }
+  // nemesis saga: the rival returns stronger at 22, 30, 40 and 55
+  const sagaAt = [22, 30, 40, 55];
+  if (C.phase === "career" && !C.flags.nemDown && sagaAt.includes(C.age) && !C.injury) {
+    const ch = sagaAt.indexOf(C.age) + 1, final = ch === 4 || C.age >= 40 && ovr(C) >= 75;
+    C.rival.ovr = Math.max(C.rival.ovr || 0, ovr(C) + ri(-2, 6));
+    const lines = ["is back, wearing armour as black as night. They have joined the Shadow and they want a rematch.", "has taken a castle in the north and put your name on a list.", "has burned your old dormitory at Aldermoor. The message is clear.", "is old now, but their eyes are the same. This is the last time."];
+    queue.push({ result: { title: `🔥 Nemesis · Chapter ${ch}`, text: `${C.rival.name}, your rival since your first day at Aldermoor, ${lines[ch - 1]}` } });
+    queue.push({ fight: { title: `⚔️ ${final ? "FINAL SHOWDOWN" : "Nemesis"}: ${C.rival.name}`, opp: { name: C.rival.name, look: C.rival.look }, pow: myPower() * (0.92 + ch * 0.06),
+      win: { fx: final ? "fame+250 main+3" : "fame+90 main+1", flag: final ? "nemDown" : "", trophy: final ? ["🗡️", `Defeated the nemesis ${C.rival.name}`] : null, t: final ? `${C.rival.name} falls. After a lifetime, it is finally over. You help your old rival to their feet, and they nod. Respect.` : `${C.rival.name} retreats into the dark, wounded. "This isn't over," they hiss.` },
+      lose: { fx: "fame-30", t: `${C.rival.name} stands over you. "Not yet," they laugh. "I want you to see me win everything first."` } } });
+    C.flags["nem" + ch] = true; if (final) C.flags.nemFinal = true;
+  }
+}
+const FEATS = [
+  ["oath", "Sworn", "Take the Oath at Aldermoor", () => true],
+  ["year3", "Upper years", "Reach Year 3 at the academy", () => C.schoolYear >= 3 || C.phase !== "academy"],
+  ["grad", "Graduate", "Graduate from Aldermoor", () => C.phase !== "academy"],
+  ["cup", "Order Cup", "Win an Order Cup", () => C.orderCups >= 1],
+  ["sky", "Skyball champion", "Win a Skyball Cup", () => C.trophies.some(t => /Skyball/.test(t.name))],
+  ["guild", "Sworn in", "Join a guild", () => !!C.guild],
+  ["gm", "Grandmaster", "Reach the top rank of a guild", () => C.rank >= 5],
+  ["hero", "Hero of the Realm", "Be named Hero of the Realm", () => C.awards >= 1],
+  ["hero3", "Living legend", "Be Hero of the Realm 3 times", () => C.awards >= 3],
+  ["dragon", "Dragonslayer", "Slay the First Dragon", () => C.totals.legends.includes("dragon")],
+  ["shadow", "Shadowbreaker", "Break the Shadow King", () => C.totals.legends.includes("shadow")],
+  ["q50", "Adventurer", "Finish 50 quests", () => C.totals.quests >= 50],
+  ["q150", "Seasoned", "Finish 150 quests", () => C.totals.quests >= 150],
+  ["rich", "Dragon's hoard", "Earn 10,000 gold", () => C.totals.gold >= 10000],
+  ["castle", "Lord of the castle", "Own the grandest home", () => C.home >= (HOMES.length - 1)],
+  ["love", "True love", "Find a partner", () => !!C.partner],
+  ["kids", "Dynasty", "Have 3 children", () => C.kids.length >= 3],
+  ["perk5", "Gifted", "Unlock 5 perks", () => C.perks.length >= 5],
+  ["r80", "Elite", "Reach a rating of 80", () => (C.best.rating || 0) >= 80 || ovr(C) >= 80],
+  ["bond", "Best friends", "Reach bond level 5 with your companion", () => (C.bond || 0) >= 10],
+  ["prophecy", "Foretold", "Fulfil your birth prophecy", () => !!C.flags.prophecy],
+  ["nem", "Old scores", "Face your nemesis 3 times", () => ["nem1", "nem2", "nem3", "nem4"].filter(k => C.flags[k]).length >= 3],
+  ["ancestor", "Bloodline", "Begin a life in the shadow of a past legend", () => !!C.ancestor],
+  ["nemdown", "It is finished", "Defeat your nemesis in the final showdown", () => !!C.flags.nemDown],
+  ["century", "Centuries", "Live to 100", () => C.age >= 100],
+];
+function checkFeats(quiet) {
+  if (!C) return; C.feats = C.feats || []; let got = 0;
+  for (const [id, n, d, f] of FEATS) { if (C.feats.includes(id)) continue; let ok = false; try { ok = !!f(); } catch (e) {} if (ok) { C.feats.push(id); got++; if (!quiet) featToast(n, d); } }
+  if (got) persist();
+}
+function featToast(n, d) {
+  let w = document.getElementById("featT"); if (!w) { w = el("div"); w.id = "featT"; document.body.append(w); }
+  while (w.children.length >= 2) w.firstChild.remove();
+  const t = el("div", null, "feat-toast"); t.append(el("b", "🏅 Feat: " + n), el("small", d)); w.append(t);
+  setTimeout(() => t.classList.add("out"), 3400); setTimeout(() => t.remove(), 4000);
 }
